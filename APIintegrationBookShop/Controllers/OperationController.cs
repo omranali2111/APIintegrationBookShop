@@ -13,12 +13,22 @@ namespace APIintegrationBookShop.Controllers
     public class OperationController : ControllerBase
     {
         
-        HttpClient Client;
+       public static HttpClient BankClient;
+       public static  HttpClient LibraryClient;
+      //  static BankController BankMethods;
         public static string AuthToken;
+        public static string AuthToken2;
+
+
         public OperationController()
         {
-            Client = new HttpClient();
-            Client.BaseAddress = new Uri("https://localhost:7166/");
+            BankClient = new HttpClient();
+            LibraryClient = new HttpClient();
+
+            BankClient.BaseAddress = new Uri("https://localhost:7157/");
+            LibraryClient.BaseAddress = new Uri("https://localhost:7166/");
+
+             //BankMethods = new BankController();
         }
 
 
@@ -36,11 +46,11 @@ namespace APIintegrationBookShop.Controllers
                 return Unauthorized("Token is missing or invalid.");
             }
 
-            Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("bearer", AuthToken);
+            LibraryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("bearer", AuthToken);
 
             try
             {
-                HttpResponseMessage resp = await Client.GetAsync("api/BookOperation/ViewAllBooks");
+                HttpResponseMessage resp = await LibraryClient.GetAsync("api/BookOperation/ViewAllBooks");
 
                 if (resp.IsSuccessStatusCode)
                 {
@@ -69,7 +79,7 @@ namespace APIintegrationBookShop.Controllers
                 // Log received credentials
                 Log.Information($"Received login request - Email: {email}, Password: {password}");
 
-                HttpResponseMessage response = await Client.PostAsJsonAsync("api/UserLogin/user-login", loginRequest);
+                HttpResponseMessage response = await LibraryClient.PostAsJsonAsync("api/UserLogin/user-login", loginRequest);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -93,28 +103,63 @@ namespace APIintegrationBookShop.Controllers
         }
 
         [HttpPost("BorrowBook")]
-        public async Task<IActionResult> BorrowBook(int patronId, int bookId)
+        public async Task<IActionResult> BorrowBook(BorrowRequest br)
         {
-            var borrowRequest = new BorrowRequest { PatronId = patronId, BookId = bookId };
-
+            LibraryClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("bearer", AuthToken);
+            var borrowRequest = new BorrowRequest { PatronId = br.PatronId, BookId = br.BookId };
+            var loginRequest = new { Email = br.BankEmail, Password = br.BankPassword };
+            var withdrawRequest = new { br.accountNumber, br.withdrawalAmount };
             try
             {
-                HttpResponseMessage response = await Client.PostAsJsonAsync("/api/PatronOperation/BorrowBook", borrowRequest);
+              
 
-                if (response.IsSuccessStatusCode)
+                // Step 1: Log in to the bank
+                HttpResponseMessage response2 = await BankClient.PostAsJsonAsync("api/UserLogin/user-login", loginRequest);
+                var tokenResponse1 = await response2.Content.ReadAsStringAsync();
+                AuthToken2 = tokenResponse1; // Store the token as a JSON string
+                if (response2.IsSuccessStatusCode)
                 {
-                    // Process successful response
-                    return Ok("Book borrowed successfully");
+                    BankClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("bearer", AuthToken2);
+                    // Step 2: Perform a withdrawal
+
+                    HttpResponseMessage response3 = await BankClient.PutAsJsonAsync("api/AccountOperation/withdraw", withdrawRequest);
+
+                    if (response3.IsSuccessStatusCode)
+                    {
+                        Log.Information("Withdrawal successful");
+                        // Step 3: Borrow a book
+                        HttpResponseMessage  response = await LibraryClient.PostAsJsonAsync("api/PatronOperation/BorrowBook", borrowRequest);
+
+                        if (response.IsSuccessStatusCode)
+                        {
+
+
+                            return Ok("Book borrowed and bank operations completed successfully");
+                        }
+                        else
+                        {
+                            // Handle unsuccessful book borrowing
+                            Log.Warning($"Borrowing book failed - Status code: {response.StatusCode}");
+                            return BadRequest("Failed to borrow book");
+                        }
+                    }
+                    else
+                    {
+                        // Handle unsuccessful withdrawal
+                        Log.Warning($"Withdrawal failed - Status code: {response3.StatusCode}");
+                        return BadRequest("Failed to withdraw amount from the bank");
+                    }
                 }
                 else
                 {
-                    // Handle unsuccessful response
-                    Log.Warning($"Borrowing book failed - Status code: {response.StatusCode}");
-                    return BadRequest("Failed to borrow book");
+                    // Handle unsuccessful bank login
+                    Log.Warning($"Login failed - Status code: {response2.StatusCode}");
+                    return BadRequest("Failed to log in to the bank");
                 }
             }
             catch (Exception ex)
             {
+                // Handle exceptions
                 Log.Error($"An error occurred during book borrowing: {ex.Message}");
                 return StatusCode(500, $"An error occurred: {ex.Message}");
             }
